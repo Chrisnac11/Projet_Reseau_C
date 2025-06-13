@@ -176,21 +176,39 @@ graphe creerReseau(const char* nom_fichier) {
     }
 
     char ligne[MAX_LINE_LENGTH];
-    fgets(ligne, sizeof(ligne), fichier);
+    if (fgets(ligne, sizeof(ligne), fichier) == NULL) {
+        fprintf(stderr, "Erreur : fichier vide ou problème de lecture\n");
+        fclose(fichier);
+        exit(EXIT_FAILURE);
+    }
 
     int nb_equipements = 0, nb_liens = 0;
     sscanf(ligne, "%d %d", &nb_equipements, &nb_liens);
 
-    Equipement equipements[MAX_EQUIPMENTS];
+    graphe g;
+    g.ordre = 0;
+    g.nb_aretes = 0;
+    g.aretes_capacite = INITIAL_CAPACITE;
+    g.aretes = malloc(g.aretes_capacite * sizeof(arete));
+    if (g.aretes == NULL) {
+        fprintf(stderr, "Erreur d'allocation mémoire pour les arêtes\n");
+        fclose(fichier);
+        exit(EXIT_FAILURE);
+    }
 
     // Lecture des équipements
     for (int i = 0; i < nb_equipements; i++) {
-        fgets(ligne, sizeof(ligne), fichier);
+        if (fgets(ligne, sizeof(ligne), fichier) == NULL) {
+            fprintf(stderr, "Erreur : problème de lecture des équipements\n");
+            fclose(fichier);
+            free(g.aretes);
+            exit(EXIT_FAILURE);
+        }
 
         char* type_str = strtok(ligne, ";");
         int type = atoi(type_str);
 
-        if (type == SWITCH) {
+        if (type == SWITCH) { // Switch
             char* mac_str = strtok(NULL, ";");
             char* nb_ports_str = strtok(NULL, ";");
             char* priorite_str = strtok(NULL, ";");
@@ -199,50 +217,68 @@ graphe creerReseau(const char* nom_fichier) {
             int priorite = atoi(priorite_str);
 
             Struct_switch* sw = init_machine(mac_str, nb_ports, priorite);
-            equipements[i].type = SWITCH;
-            equipements[i].equipement = sw;
+            g.equipements[g.ordre].type = SWITCH;
+            g.equipements[g.ordre].equipement = sw;
 
-        } else if (type == STATION) {
+        } else if (type == STATION) { // Station
             char* mac_str = strtok(NULL, ";");
             char* ip_str = strtok(NULL, ";\n");
 
             Struct_station* pc = init_pc(mac_str, ip_str);
-            equipements[i].type = STATION;
-            equipements[i].equipement = pc;
+            g.equipements[g.ordre].type = STATION;
+            g.equipements[g.ordre].equipement = pc;
+
+        } else {
+            fprintf(stderr, "Erreur : type d'équipement inconnu (%d)\n", type);
+            continue;
         }
-    }
 
-    // Création du graphe
-    graphe g;
-    init_graphe(&g);
-
-    for (int i = 0; i < nb_equipements; i++) {
-        ajouter_sommet(&g);
+        g.ordre++; // Incrémenter le nombre d'équipements
     }
 
     // Lecture des liens
     for (int i = 0; i < nb_liens; i++) {
-        fgets(ligne, sizeof(ligne), fichier);
+        if (fgets(ligne, sizeof(ligne), fichier) == NULL) {
+            fprintf(stderr, "Erreur : problème de lecture des liens\n");
+            fclose(fichier);
+            free(g.aretes);
+            exit(EXIT_FAILURE);
+        }
 
         int from, to, poids;
         sscanf(ligne, "%d;%d;%d", &from, &to, &poids);
 
-        arete a = { .s1 = from, .s2 = to };
-        ajouter_arete(&g, a);
-        // Si vous stockez le poids, ajoutez le à une structure annexe ou modifiez `arete`
-    }
+        if (g.nb_aretes >= g.aretes_capacite) {
+            g.aretes_capacite *= 2;
+            g.aretes = realloc(g.aretes, g.aretes_capacite * sizeof(arete));
+            if (g.aretes == NULL) {
+                fprintf(stderr, "Erreur de réallocation mémoire pour les arêtes\n");
+                fclose(fichier);
+                exit(EXIT_FAILURE);
+            }
+        }
 
+        // Ajouter les liens
+        g.aretes[g.nb_aretes].s1 = ((Struct_station*)g.equipements[from].equipement)->mac;
+        g.aretes[g.nb_aretes].s2 = ((Struct_station*)g.equipements[to].equipement)->mac;
+        g.nb_aretes++;
 
-    fclose(fichier);
+        // Mettre à jour la table de commutation si l'équipement source est un switch
+        if (g.equipements[from].type == SWITCH) {
+            Struct_switch* sw = (Struct_switch*)g.equipements[from].equipement;
+            sw->commutation[to].machine = ((Struct_station*)g.equipements[to].equipement)->mac;
+            sw->commutation[to].port = to; // Associer le port
+        }
 
-    // Exemple : afficher les IP des stations
-    for (int i = 0; i < nb_equipements; i++) {
-        if (equipements[i].type == STATION) {
-            Struct_station* s = (Struct_station*)equipements[i].equipement;
-            printf("Station %d: IP = %d.%d.%d.%d\n", i, s->IP[0], s->IP[1], s->IP[2], s->IP[3]);
+        // Mettre à jour la table de commutation si l'équipement destination est un switch
+        if (g.equipements[to].type == SWITCH) {
+            Struct_switch* sw = (Struct_switch*)g.equipements[to].equipement;
+            sw->commutation[from].machine = ((Struct_station*)g.equipements[from].equipement)->mac;
+            sw->commutation[from].port = from; // Associer le port
         }
     }
 
+    fclose(fichier);
     return g;
 }
 
@@ -293,6 +329,68 @@ void recuperer_trame_du_buffer(trame* t) {
     }
 }
 
+void envoyer_trame(const graphe* g, uint64_t mac_source, uint64_t mac_dest, const char* contenu) {
+    // Créer une trame
+    trame t;
+    t.mac_source = mac_source;
+    t.mac_dest = mac_dest;
+    t.data = malloc(strlen(contenu) + 1);
+    strcpy(t.data, contenu);
+    t.bourrage = NULL; // Pas de bourrage dans cet exemple
+
+    // Copier la trame dans le buffer global
+    copier_trame_dans_buffer(&t);
+
+    // Simuler la réception de la trame
+    trame trame_recue;
+    recuperer_trame_du_buffer(&trame_recue);
+
+    // Afficher les informations de la trame reçue
+    printf("Trame reçue :\n");
+    printf("  Source : %02X:%02X:%02X:%02X:%02X:%02X\n",
+           (unsigned int)((trame_recue.mac_source >> 40) & 0xFF),
+           (unsigned int)((trame_recue.mac_source >> 32) & 0xFF),
+           (unsigned int)((trame_recue.mac_source >> 24) & 0xFF),
+           (unsigned int)((trame_recue.mac_source >> 16) & 0xFF),
+           (unsigned int)((trame_recue.mac_source >> 8) & 0xFF),
+           (unsigned int)(trame_recue.mac_source & 0xFF));
+    printf("  Destination : %02X:%02X:%02X:%02X:%02X:%02X\n",
+           (unsigned int)((trame_recue.mac_dest >> 40) & 0xFF),
+           (unsigned int)((trame_recue.mac_dest >> 32) & 0xFF),
+           (unsigned int)((trame_recue.mac_dest >> 24) & 0xFF),
+           (unsigned int)((trame_recue.mac_dest >> 16) & 0xFF),
+           (unsigned int)((trame_recue.mac_dest >> 8) & 0xFF),
+           (unsigned int)(trame_recue.mac_dest & 0xFF));
+    printf("  Contenu : %s\n", trame_recue.data);
+
+    // Libérer la mémoire allouée pour la trame
+    free(t.data);
+    if (trame_recue.data != NULL) {
+        free(trame_recue.data);
+    }
+}
+
+void afficher_echanges(const graphe* g) {
+    printf("\n=== Échanges de trames ===\n");
+
+    for (size_t i = 0; i < g->nb_aretes; i++) {
+        arete lien = g->aretes[i];
+
+        // Exemple de contenu de trame
+        char contenu[64];
+        snprintf(contenu, sizeof(contenu), "Message de %02X:%02X:%02X:%02X:%02X:%02X",
+                 (unsigned int)((lien.s1 >> 40) & 0xFF),
+                 (unsigned int)((lien.s1 >> 32) & 0xFF),
+                 (unsigned int)((lien.s1 >> 24) & 0xFF),
+                 (unsigned int)((lien.s1 >> 16) & 0xFF),
+                 (unsigned int)((lien.s1 >> 8) & 0xFF),
+                 (unsigned int)(lien.s1 & 0xFF));
+
+        // Simuler l'envoi de la trame
+        envoyer_trame(g, lien.s1, lien.s2, contenu);
+    }
+}
+
 bool stations_meme_graphe(graphe* g, trame* t) {
     if (g == NULL || t == NULL) {
         fprintf(stderr, "Erreur : graphe ou trame NULL\n");
@@ -300,8 +398,8 @@ bool stations_meme_graphe(graphe* g, trame* t) {
     }
 
     // Récupérer les adresses MAC des deux stations depuis la trame
-    MAC mac_station1 = t->adr_depart;
-    MAC mac_station2 = t->adr_visee;
+    MAC mac_station1 = t->mac_source;
+    MAC mac_station2 = t->mac_dest;
 
     // Vérifier si les deux stations existent dans le graphe
     Struct_station* station1 = get_station_by_mac(g->equipements, g->ordre, mac_station1);
@@ -365,7 +463,19 @@ void afficher_reseau(const graphe* g) {
     // Afficher les équipements
     printf("\n--- Équipements ---\n");
     for (size_t i = 0; i < g->ordre; i++) {
+        printf("Équipement %zu :\n", i);
         afficher_equipement(&g->equipements[i]);
+
+        // Si l'équipement est un switch, afficher ses informations spécifiques
+        if (g->equipements[i].type == SWITCH) {
+            Struct_switch* sw = (Struct_switch*)g->equipements[i].equipement;
+
+            printf("  Nombre de ports : %d\n", sw->nb_ports);
+            printf("  Priorité : %d\n", sw->priorite);
+
+            // Afficher la table de commutation une seule fois
+            afficher_table_commutation(sw);
+        }
     }
 
     // Afficher les liens
@@ -373,6 +483,16 @@ void afficher_reseau(const graphe* g) {
     for (size_t i = 0; i < g->nb_aretes; i++) {
         afficher_lien(&g->aretes[i]);
     }
+}
+
+void mac_to_string(uint64_t mac, char* buffer) {
+    snprintf(buffer, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+             (unsigned int)((mac >> 40) & 0xFF),
+             (unsigned int)((mac >> 32) & 0xFF),
+             (unsigned int)((mac >> 24) & 0xFF),
+             (unsigned int)((mac >> 16) & 0xFF),
+             (unsigned int)((mac >> 8) & 0xFF),
+             (unsigned int)(mac & 0xFF));
 }
 
 void afficher_equipement(const Equipement* eq) {
@@ -384,20 +504,22 @@ void afficher_equipement(const Equipement* eq) {
     switch (eq->type) {
         case STATION: {
             Struct_station* station = (Struct_station*)eq->equipement;
+            char mac_str[18];
+            mac_to_string(station->mac, mac_str);
+
             printf("Type : Station\n");
-            printf("  Nom : %s\n", station->nom ? station->nom : "Inconnu");
-            printf("  MAC : %lu\n", station->mac);
+            printf("  MAC : %s\n", mac_str);
             printf("  IP  : %d.%d.%d.%d\n",
                    station->IP[0], station->IP[1], station->IP[2], station->IP[3]);
             break;
         }
         case SWITCH: {
             Struct_switch* sw = (Struct_switch*)eq->equipement;
+            char mac_str[18];
+            mac_to_string(sw->mac, mac_str);
+
             printf("Type : Switch\n");
-            printf("  Nom : %s\n", sw->nom ? sw->nom : "Inconnu");
-            printf("  MAC : %lu\n", sw->mac);
-            printf("  Nombre de ports : %d\n", sw->nb_ports);
-            printf("  Priorité : %d\n", sw->priorite);
+            printf("  MAC : %s\n", mac_str);
             break;
         }
         default:
@@ -412,7 +534,43 @@ void afficher_lien(const arete* lien) {
         return;
     }
 
+    // Buffers pour stocker les adresses MAC formatées
+    char mac1_str[18], mac2_str[18];
+
+    // Convertir les adresses MAC en chaînes lisibles
+    mac_to_string(lien->s1, mac1_str);
+    mac_to_string(lien->s2, mac2_str);
+
+    // Afficher les informations du lien
     printf("Lien :\n");
-    printf("  Équipement 1 (MAC) : %zu\n", lien->s1);
-    printf("  Équipement 2 (MAC) : %zu\n", lien->s2);
+    printf("  Équipement 1 (MAC) : %s\n", mac1_str);
+    printf("  Équipement 2 (MAC) : %s\n", mac2_str);
+}
+
+void afficher_table_commutation(const Struct_switch* sw) {
+    if (sw == NULL) {
+        printf("Erreur : switch NULL\n");
+        return;
+    }
+
+    printf("Table de commutation pour le switch (MAC : ");
+    char mac_str[18];
+    mac_to_string(sw->mac, mac_str);
+    printf("%s):\n", mac_str);
+
+    printf("Nombre de ports : %d\n", sw->nb_ports);
+    printf("  Port | Adresse MAC          | État\n");
+    printf("  -----------------------------------\n");
+
+    for (int i = 0; i < sw->nb_ports; i++) {
+        const char* etat_port = (sw->commutation[i].machine != 0) ? "Actif" : "Inactif";
+
+        if (sw->commutation[i].machine != 0) {
+            char mac_entry_str[18];
+            mac_to_string(sw->commutation[i].machine, mac_entry_str);
+            printf("  %4d | %-20s | %s\n", i, mac_entry_str, etat_port);
+        } else {
+            printf("  %4d | %-20s | %s\n", i, "Aucune", etat_port);
+        }
+    }
 }

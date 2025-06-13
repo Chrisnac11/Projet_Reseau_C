@@ -26,8 +26,8 @@ typedef struct arete
 typedef uint64_t MAC;
 
 typedef struct {
-    uint8_t adr_depart;
-    uint8_t adr_visee;
+    uint64_t mac_source;
+    uint64_t mac_dest;
     int type;
     char* data;
     char* bourrage;
@@ -110,3 +110,8 @@ void deinit_reseau(graphe* g);
 void afficher_reseau(const graphe* g);
 void afficher_equipement(const Equipement* eq);
 void afficher_lien(const arete* lien);
+void afficher_table_commutation(const Struct_switch* sw);
+
+void mac_to_string(uint64_t mac, char* buffer);
+
+void afficher_echanges(const graphe* g);
